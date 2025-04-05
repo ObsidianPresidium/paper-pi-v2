@@ -12,20 +12,17 @@ import urllib.request
 import json
 server_path = "$RUNPY_PATH"
 desired_version = "$RUNPY_VERSION"
-run_server_string = f"java -Xmx$RUNPY_MEMORY -Xms$RUNPY_MEMORY -jar {os.path.join(server_path, $RUNPY_PATH)} nogui"
+run_server_string = f"java -Xmx$RUNPY_MEMORY -Xms$RUNPY_MEMORY -jar {{os.path.join(server_path, 'server.jar')}} nogui"
 
 def get_latest_build(version):
-    def write_current_version(_version, build, file, endpoint):
+    def write_current_version(_version, build, file, url):
         with open(os.path.join(server_path, "current-version.json"), "w") as f:
             json.dump({
                 "version": _version,
                 "build": build
             }, f)
         
-        endpoint = endpoint.replace("$VERSION", _version)
-        endpoint = endpoint.replace("$BUILD", build)
-        endpoint = endpoint.replace("$FILE", file)
-        return urllib.request.urlretrieve(endpoint, os.path.join(server_path, "server.jar")[1] 
+        return urllib.request.urlretrieve(url, os.path.join(server_path, "server.jar"))[1] 
 """
 
 runfile_paper_string = """    
@@ -55,14 +52,14 @@ runfile_check_build_update_logic_string = """
     if os.path.exists(os.path.join(server_path, "current-version.json")):
         with open(os.path.join(server_path, "current-version.json"), "r") as f:
             last = json.load(f)
-        if last["version"] == version and last["build"] == build:
+        if last["version"] == version and last["build"] == last_build:
             print("No new updates were found to this version from server flavor vendor.")
             return False
         print("Update to server jarfile build from server flavor vendor available.")
-        return write_current_version(version, build, file_name, url)
+        return write_current_version(version, last_build, os.path.join(server_path, "server.jar"), url)
     else:
         print("No previous build found, downloading latest build.")
-        return write_current_version(version, build, file_name, url)
+        return write_current_version(version, last_build, os.path.join(server_path, "server.jar"), url)
         
 """
 
@@ -88,33 +85,49 @@ if __name__ == "__main__":
     os.chdir(server_path)
     while True:
         print("Checking for updates to server jarfile")
-        get_latest_build(desired_version)
+        if desired_version == "latest":
+            version = get_latest_version()
+        else:
+            version = desired_version
+        get_latest_build(version)
         print("Starting server...")
         os.system(run_server_string)
         print("Server stopped, press CTRL+C to stop the server from restarting.")
         try:
             time.sleep(5)
         except KeyboardInterrupt:
-            print("\nExiting...")
+            print("\\nExiting...")
             break
 """
 
+help_message = """
+Usage: python3 paper-pi.py [options]
+Options:
+  -h, --help        Show this help message and exit
+  -E, --agree-eula  Agree to the Minecraft EULA. If not specified, the script will show this message and exit.
+  -f, --flavor      Flavor of Minecraft server to install (paper/fabric)
+  -p, --path        Path to the Minecraft server directory (default: ~/minecraft)
+  -v, --version     Version of Minecraft server to install (default: latest stable, update on restart)
+  -m, --memory      Amount of RAM to allocate to the server (Xmx and Xms) (default: 2048M)
+"""
+
 options = {}
+accepted_eula = False
 
 def parseargs():
     global options
-    opts, args = getopt(sys.argv[1:], "h", ["help"])
+    opts, args = getopt(sys.argv[1:], "hEf:p:v:m:", ["help", "agree-eula", "flavor=", "path=", "version=", "memory="])
+    if len(opts) == 0:
+        print(help_message)
+        sys.exit(1)
+    
     for opt, arg in opts:
-        if opt in ("-h", "--help") or len(opts) == 0 or opt in ("-E", "--agree-eula"):
-            print("Usage: python3 paper-pi.py [options]")
-            print("Options:")
-            print("  -h, --help        Show this help message and exit")
-            print("  -E, --agree-eula  Agree to the Minecraft EULA. If not specified, the script will show this message and exit.")
-            print("  -f, --flavor      Flavor of Minecraft server to install (paper/fabric)")
-            print("  -p, --path        Path to the Minecraft server directory (default: ~/minecraft)")
-            print("  -v, --version     Version of Minecraft server to install (default: newest, keep updated)")
-            print("  -m, --memory      Amount of RAM to allocate to the server (Xmx and Xms) (default: 2048M)")
+        if opt in ("-h", "--help"):
+            print(help_message)
             sys.exit(0)
+        elif opt in ("-E", "--agree-eula"):
+            global accepted_eula
+            accepted_eula = True
         elif opt in ("-f", "--flavor"):
             options["flavor"] = arg
         elif opt in ("-p", "--path"):
@@ -139,17 +152,40 @@ def apply_defaults():
 
 def get_jar():
     if options["flavor"] == "paper":
+        if options["version"] == "latest":
+            print("Getting the latest version from papermc.io...")
+            response = requests.get("https://api.papermc.io/v2/projects/paper/")
+            if response.status_code != 200:
+                raise Exception("Getting latest version from papermc.io failed, are their servers down, do you have connection to the internet?")
+            response = response.json()
+            version = response["versions"][len(response["versions"]) - 1]
+        else:
+            version = options["version"]
         print("Getting the latest build from papermc.io...")
-        response = requests.get(f"https://api.papermc.io/v2/projects/paper/versions/{options['version']}/builds")
+        response = requests.get(f"https://api.papermc.io/v2/projects/paper/versions/{version}/builds")
         if response.status_code != 200:
             raise Exception("Getting latest build from papermc.io failed, did you specify a correct version, are their servers down, do you have connection to the internet?")
         response = response.json()
         last_build = response["builds"][len(response["builds"]) - 1]["build"]
         file_name = response["builds"][len(response["builds"]) - 1]["downloads"]["application"]["name"]
-        url = f"https://api.papermc.io/v2/projects/paper/versions/{options['version']}/builds/{last_build}/downloads/{file_name}"
+        url = f"https://api.papermc.io/v2/projects/paper/versions/{version}/builds/{last_build}/downloads/{file_name}"
     elif options["flavor"] == "fabric":
         print("Getting the latest build from fabricmc.net...")
-        response = requests.get(f"https://meta.fabricmc.net/v2/versions/loader/{options['version']}")
+        if (options["version"] == "latest"):
+            response = requests.get("https://meta.fabricmc.net/v2/versions")
+            if response.status_code != 200:
+                raise Exception("Getting latest build from fabricmc.net failed, did you specify a correct version, are their servers down, do you have connection to the internet?")
+            response = response.json()
+            index = 0
+            while "w" in response["game"][index]["version"]:
+                index += 1
+                if index >= len(response["game"]):
+                    raise Exception("Could not find stable version of Minecraft for fabric?")
+            version = response["game"][index]["version"]
+        else:
+            version = options["version"]
+
+        response = requests.get(f"https://meta.fabricmc.net/v2/versions/loader/{version}")
         if response.status_code != 200:
             raise Exception("Getting latest build from fabricmc.net failed, did you specify a correct version, are their servers down, do you have connection to the internet?")
         build_response = response.json()
@@ -157,7 +193,7 @@ def get_jar():
         response = requests.get(f"https://meta.fabricmc.net/v2/versions/installer")
         installer_response = response.json()
         last_installer = installer_response[0]["version"]
-        url = f"https://meta.fabricmc.net/v2/versions/loader/{options['version']}/{last_build}/{last_installer}/server/jar"
+        url = f"https://meta.fabricmc.net/v2/versions/loader/{version}/{last_build}/{last_installer}/server/jar"
     else:
         raise Exception("Unknown/invalid flavor specified. Use -h or check docs for a list of supported flavors.")
     print("Downloading...")
@@ -180,7 +216,7 @@ def create_runfile():
         runfile_server_string = runfile_fabric_string
         runfile_get_latest_version_string = runfile_get_latest_version_fabric_string
     else:
-        raise Exception("????")
+        raise Exception("Invalid flavor in create_runfile(). Expected 'paper' or 'fabric'.")
 
     with open(os.path.join(options["path"], "run.py"), "a") as f:
         f.write(runfile_setup_string)
@@ -192,9 +228,6 @@ def create_runfile():
 
 
 def setup():
-    print("---Paper Pi v2---")
-    print("A Minecraft server run file generator")
-
     try:
         os.makedirs(options["path"], exist_ok=False)
     except FileExistsError:
@@ -216,5 +249,12 @@ if __name__ == "__main__":
     print("---Paper Pi v2---")
     print("A Minecraft server run file generator")
     parseargs()
+    if not accepted_eula:
+        print(help_message + "\n")
+        print("Error: You must accept the Minecraft EULA to run this script. Use -E or --agree-eula to accept.")
+        sys.exit(1)
+    
+    apply_defaults()
     setup()
     create_runfile()
+    print(f"The script is finished. You can now run the server using the run.py script, located in {options['path']}.")
